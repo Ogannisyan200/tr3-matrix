@@ -1,130 +1,182 @@
-# Импортируем необходимые модули
-import multiprocessing  # Для параллельных вычислений
-import sys  # Для работы с аргументами командной строки
+import multiprocessing  # Для организации параллельных процессов
+import random  # Для генерации случайных чисел
+import time    # Для имитации времени работы и пауз
+import sys     # Для работы с аргументами командной строки
+import threading  # Для запуска потока ввода команды
+import queue as Queue  # Для безопасной передачи данных между потоками
+import signal  # Для обработки сигналов прерывания
 
-# Функция для чтения матрицы из файла
-def read_matrix(filename):
+# Функция генерации случайной квадратной матрицы заданного размера
+def generate_random_matrix(size):
     """
-    Читает матрицу из файла.
-
-    Параметры:
-        filename (str): Имя файла, из которого читается матрица.
-
-    Возвращает:
-        list: Двумерный список (матрица), содержащий числа из файла.
+    Генерирует случайную квадратную матрицу заданного размера.
     """
-    # Открываем файл на чтение
-    with open(filename, 'r') as f:
-        matrix = []  # Инициализируем пустой список для хранения строк матрицы
-        for line in f:
-            # Убираем лишние пробелы и символы перевода строки
-            line = line.strip()
-            # Разделяем строку на отдельные элементы по пробелам
-            str_numbers = line.split()
-            # Преобразуем каждую строку в число (float)
-            row = [float(num) for num in str_numbers]
-            # Добавляем полученный список чисел в матрицу
-            matrix.append(row)
-    # Возвращаем матрицу
+    # Создаем матрицу с помощью вложенных списков
+    matrix = []
+    for _ in range(size):
+        # Генерируем строку матрицы
+        row = [random.randint(0, 10) for _ in range(size)]
+        matrix.append(row)
     return matrix
 
-# Функция для вычисления одного элемента произведения матриц
-def compute_element(args):
+# Процесс-генератор матриц
+def matrix_generator(queue, size, stop_event):
     """
-    Вычисляет значение одного элемента результирующей матрицы.
-
-    Параметры:
-        args (tuple): Кортеж, содержащий индекс элемента и матрицы A и B.
-
-    Возвращает:
-        tuple: Кортеж, содержащий индекс элемента и вычисленное значение.
+    Генерирует пары случайных матриц и отправляет их в очередь для перемножения.
     """
-    # Распаковываем аргументы
-    index, A, B = args
-    i, j = index  # Индексы строки и столбца для вычисляемого элемента
-    res = 0  # Инициализируем переменную для накопления суммы
-    # Количество элементов для суммирования (число столбцов в A или строк в B)
-    N = len(A[0])
-    # Цикл по общему размеру для суммирования произведений
-    for k in range(N):
-        # Умножаем элемент из строки матрицы A на элемент из столбца матрицы B и добавляем к сумме
-        res += A[i][k] * B[k][j]
-    # Возвращаем индекс и вычисленное значение элемента
-    return (index, res)
+    print("Запуск процесса генерации матриц.")
+    try:
+        while not stop_event.is_set():
+            # Генерируем две случайные матрицы
+            A = generate_random_matrix(size)
+            B = generate_random_matrix(size)
+            # Отправляем пару матриц в очередь
+            queue.put((A, B))
+            print("Сгенерированы две матрицы и отправлены в очередь.")
+            # Имитация задержки между генерациями
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Процесс генерации матриц прерван.")
+    finally:
+        # После остановки генерации отправляем специальный сигнал (None) для завершения работы умножителя
+        queue.put(None)
+        print("Остановка процесса генерации матриц.")
+
+# Процесс перемножения матриц
+def matrix_multiplier(queue, stop_event):
+    """
+    Получает пары матриц из очереди, перемножает их и записывает результат в файл.
+    """
+    print("Запуск процесса перемножения матриц.")
+    try:
+        # Открываем файл для записи результатов
+        with open('multiplication_results.txt', 'w') as result_file:
+            while True:
+                # Проверяем, установлен ли сигнал остановки и пуста ли очередь
+                if stop_event.is_set() and queue.empty():
+                    break
+                try:
+                    # Устанавливаем таймаут, чтобы можно было проверить stop_event
+                    matrices = queue.get(timeout=1)
+                except Queue.Empty:
+                    continue
+                # Проверяем специальный сигнал для завершения работы
+                if matrices is None:
+                    print("Получен сигнал завершения умножения.")
+                    break
+                A, B = matrices
+                # Проверяем возможность перемножения матриц
+                if len(A[0]) != len(B):
+                    print("Матрицы не могут быть перемножены: число столбцов A не равно числу строк B")
+                    continue
+                # Перемножаем матрицы
+                result_matrix = multiply_matrices(A, B)
+                # Записываем результат в файл
+                write_matrix_to_file(result_matrix, result_file)
+                print("Матрицы перемножены и результат записан в файл.")
+    except KeyboardInterrupt:
+        print("Процесс перемножения матриц прерван.")
+    finally:
+        print("Остановка процесса перемножения матриц.")
+
+# Функция перемножения двух матриц
+def multiply_matrices(A, B):
+    """
+    Перемножает две матрицы A и B.
+    """
+    # Число строк и столбцов результирующей матрицы
+    result_rows = len(A)
+    result_cols = len(B[0])
+    # Инициализируем результирующую матрицу нулями
+    result_matrix = [[0 for _ in range(result_cols)] for _ in range(result_rows)]
+    # Выполняем умножение матриц
+    for i in range(result_rows):
+        for j in range(result_cols):
+            for k in range(len(B)):
+                result_matrix[i][j] += A[i][k] * B[k][j]
+    return result_matrix
+
+# Функция записи матрицы в файл
+def write_matrix_to_file(matrix, file):
+    """
+    Записывает матрицу в файл.
+    """
+    for row in matrix:
+        # Преобразуем числа в строки
+        str_numbers = [str(num) for num in row]
+        # Объединяем числа через пробел и добавляем перевод строки
+        line = ' '.join(str_numbers) + '\n'
+        # Записываем строку в файл
+        file.write(line)
+    # Добавляем разделитель между матрицами
+    file.write('=' * 20 + '\n')
+
+# Функция для обработки пользовательского ввода в отдельном потоке
+def user_input_thread(stop_event):
+    """
+    Ожидает ввода команды 'stop' для остановки программы.
+    """
+    while not stop_event.is_set():
+        try:
+            command = input("Введите 'stop' для остановки программы: ")
+            if command.strip().lower() == 'stop':
+                stop_event.set()
+                print("Инициирована остановка программы.")
+                break
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            stop_event.set()
+            print("\nПрограмма прервана пользователем.")
+            break
+
+# Функция для обработки сигналов прерывания
+def signal_handler(sig, frame):
+    print("\nПолучен сигнал прерывания. Программа завершается.")
+    # Устанавливаем событие остановки
+    global stop_event
+    stop_event.set()
 
 # Главная функция программы
 def main():
     """
     Основная функция программы.
-
-    Выполняет чтение матриц, их проверку, умножение и запись результата.
     """
-    # Проверяем наличие необходимых аргументов командной строки
-    if len(sys.argv) != 3:
-        print("Использование: python программа.py matrix1.txt matrix2.txt")
-        sys.exit(1)  # Завершаем программу с кодом ошибки
+    # Глобальное событие остановки
+    global stop_event
+    stop_event = multiprocessing.Event()
 
-    # Читаем имена файлов матриц из аргументов командной строки
-    matrix1_file = sys.argv[1]
-    matrix2_file = sys.argv[2]
+    # Устанавливаем обработчик сигналов
+    signal.signal(signal.SIGINT, signal_handler)
 
-    # Читаем матрицы из указанных файлов
-    A = read_matrix(matrix1_file)
-    B = read_matrix(matrix2_file)
-
-    # Проверяем возможность перемножения матриц
-    # Число столбцов матрицы A должно совпадать с числом строк матрицы B
-    if len(A[0]) != len(B):
-        print("Матрицы не могут быть перемножены: число столбцов A не равно числу строк B")
+    # Проверяем наличие аргумента командной строки для размерности матриц
+    if len(sys.argv) != 2:
+        print("Использование: python программа.py размерность_матрицы")
         sys.exit(1)
+    # Получаем размерность матрицы из аргументов командной строки
+    try:
+        matrix_size = int(sys.argv[1])
+    except ValueError:
+        print("Размерность матрицы должна быть целым числом.")
+        sys.exit(1)
+    # Создаем очередь для передачи матриц между процессами
+    queue = multiprocessing.Queue()
+    # Создаем процессы генерации и умножения матриц
+    generator_process = multiprocessing.Process(target=matrix_generator, args=(queue, matrix_size, stop_event))
+    multiplier_process = multiprocessing.Process(target=matrix_multiplier, args=(queue, stop_event))
+    # Запускаем процессы
+    generator_process.start()
+    multiplier_process.start()
+    # Запускаем поток для ввода команды от пользователя
+    input_thread = threading.Thread(target=user_input_thread, args=(stop_event,))
+    input_thread.start()
+    # Ожидаем завершения потока ввода
+    input_thread.join()
+    # Ожидаем завершения процессов
+    generator_process.join()
+    multiplier_process.join()
+    print("Программа завершена.")
 
-    # Определяем размер результирующей матрицы
-    result_rows = len(A)      # Число строк результирующей матрицы
-    result_cols = len(B[0])   # Число столбцов результирующей матрицы
-
-    # Создаем список индексов элементов результирующей матрицы
-    indices = []  # Инициализируем пустой список индексов
-    for i in range(result_rows):
-        for j in range(result_cols):
-            indices.append((i, j))  # Добавляем кортеж индексов (i, j)
-
-    # Подготавливаем аргументы для функции compute_element
-    args = []  # Инициализируем список аргументов
-    for index in indices:
-        args.append((index, A, B))  # Добавляем кортеж (индекс, матрица A, матрица B)
-
-    # Определяем количество процессов
-    num_processes = 4  # Задаем заранее количество процессов, например, 4
-
-    # Создаем пул процессов для параллельного выполнения
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        # Параллельно вычисляем элементы результирующей матрицы
-        results = pool.map(compute_element, args)
-
-    # Инициализируем пустую матрицу для хранения результатов
-    result_matrix = []
-    for i in range(result_rows):
-        # Создаем строку с нулевыми значениями
-        row = [0] * result_cols
-        # Добавляем строку в результирующую матрицу
-        result_matrix.append(row)
-
-    # Заполняем результирующую матрицу вычисленными значениями
-    for result in results:
-        (i, j), value = result
-        result_matrix[i][j] = value  # Присваиваем значение элементу матрицы
-
-    # Записываем результирующую матрицу в файл
-    with open('result_matrix.txt', 'w') as f:
-        for row in result_matrix:
-            # Преобразуем числа в строки
-            str_numbers = [str(num) for num in row]
-            # Объединяем числа через пробел и добавляем перевод строки
-            line = ' '.join(str_numbers) + '\n'
-            # Записываем строку в файл
-            f.write(line)
-
-# Проверяем, является ли данный скрипт основным (а не импортированным модулем)
+# Запускаем главную функцию, если скрипт запущен напрямую
 if __name__ == '__main__':
-    # Запускаем основную функцию
     main()
